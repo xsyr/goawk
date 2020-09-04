@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/benhoyt/goawk/internal/strutil"
+	"github.com/xsyr/goawk/internal/strutil"
 )
 
 const space = "\t\v\r\f\n\u0085\u00a0\u2000\u3000"

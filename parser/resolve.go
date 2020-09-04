@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"sort"
 
-	. "github.com/benhoyt/goawk/internal/ast"
-	. "github.com/benhoyt/goawk/lexer"
+	. "github.com/xsyr/goawk/internal/ast"
+	. "github.com/xsyr/goawk/lexer"
 )
 
 type varType int
@@ -350,8 +350,8 @@ func (p *parser) resolveVars(prog *Program) {
 				funcName := p.getVarFuncName(prog, varExpr.Name, c.inFunc)
 				info := p.varTypes[funcName][varExpr.Name]
 				if info.typ == typeArray {
-					message := fmt.Sprintf("can't pass array %q to native function", varExpr.Name)
-					panic(&ParseError{c.pos, message})
+					/*message := fmt.Sprintf("can't pass array %q to native function", varExpr.Name)
+					panic(&ParseError{c.pos, message})*/
 				}
 			}
 			continue

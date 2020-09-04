@@ -30,6 +30,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+    "log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,9 +38,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/benhoyt/goawk/interp"
-	"github.com/benhoyt/goawk/lexer"
-	"github.com/benhoyt/goawk/parser"
+	"github.com/xsyr/goawk/interp"
+	"github.com/xsyr/goawk/lexer"
+	"github.com/xsyr/goawk/parser"
+
+	"github.com/xsyr/goawk/ext"
 )
 
 const (
@@ -62,10 +65,48 @@ Additional GoAWK arguments:
   -h    show this usage message
   -version
         show GoAWK version and exit
+
+Syntax Extention:
+	suppoert 0 base array.
+
+	# create array from native function(__csv_decode(line) []string): 
+	array[] = __csv_decode("a,b,c");
+	
+	# get array length
+	print length(array[]);
+
+    # print array
+	print array[];
+
+	print __csv_decode("a,b,c");  # [f1 f2 f3]
+	# equal to
+    decoded[] = __csv_decode("a,b,c");
+    print decoded[]; # map[0:f1 1:f2 2:f3]
+
+	# NOTE: NOT SUPPORTED:
+    print length(__csv_decode("a,b,c")[]); # will failed
+
+    # get current line's raw data with line seperator.
+	print __rawline();
+
+NEVER DO IN THIS WAY:
+1. Don't pass en array to function.
+	a[0] = 1;
+    a[1] = 2;
+	array[] = __csv_decode("a,b,c");
+    dosth(a);     # will failed.
+	dosth(array); # will failed.
+
+Native functions:
+	Supported input/output type: []string, map[string]string
+
+
 `
 )
 
 func main() {
+    log.SetFlags(log.LstdFlags|log.Lshortfile)
+
 	// Parse command line arguments manually rather than using the
 	// "flag" package so we can support flags with no space between
 	// flag and argument, like '-F:' (allowed by POSIX)
@@ -109,6 +150,14 @@ func main() {
 			debugTypes = true
 		case "-h", "--help":
 			fmt.Printf("%s\n\n%s\n\n%s", copyright, shortUsage, longUsage)
+			fmt.Printf("__rawline() []byte. return raw $0 without triming.\n")
+            for _, m := range ext.Modules {
+                fmt.Printf("%s\n", m.Desc())
+                for _, fn := range m.Funcs() {
+                	fmt.Printf("    %s\n", fn.Desc)
+				}
+				fmt.Println()
+            }
 			os.Exit(0)
 		case "-memprofile":
 			if i+1 >= len(os.Args) {
@@ -174,11 +223,23 @@ func main() {
 		args = args[1:]
 	}
 
+	rt := &interp.Runtime{}
+
 	// Parse source code and setup interpreter
 	parserConfig := &parser.ParserConfig{
 		DebugTypes:  debugTypes,
 		DebugWriter: os.Stderr,
+        Funcs : make(map[string]interface{}),
 	}
+
+	parserConfig.Funcs["__rawline"] = rt.RawLine
+    for _, m := range ext.Modules {
+    	for _, fn := range m.Funcs() {
+			parserConfig.Funcs[fn.Name] = fn.Func
+		}
+		m.SetRuntime(rt)
+    }
+
 	prog, err := parser.ParseProgram(src, parserConfig)
 	if err != nil {
 		errMsg := fmt.Sprintf("%s", err)
@@ -191,9 +252,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, prog)
 	}
 	config := &interp.Config{
-		Argv0: filepath.Base(os.Args[0]),
-		Args:  args,
-		Vars:  []string{"FS", fieldSep},
+		Argv0 : filepath.Base(os.Args[0]),
+		Args  : args,
+		Vars  : []string{"FS", fieldSep},
+		Funcs : parserConfig.Funcs,
+		Runtime: rt,
 	}
 	for _, v := range vars {
 		parts := strings.SplitN(v, "=", 2)

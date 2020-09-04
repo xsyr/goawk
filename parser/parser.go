@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	. "github.com/benhoyt/goawk/internal/ast"
-	. "github.com/benhoyt/goawk/lexer"
+	. "github.com/xsyr/goawk/internal/ast"
+	. "github.com/xsyr/goawk/lexer"
 )
 
 // ParseError (actually *ParseError) is the type of error returned by
@@ -711,9 +711,9 @@ func (p *parser) primary() Expr {
 			// a[x] or a[x, y] array index expression
 			p.next()
 			index := p.exprList(p.expr)
-			if len(index) == 0 {
+			/*if len(index) == 0 {
 				panic(p.error("expected expression instead of ]"))
-			}
+			}*/
 			p.expect(RBRACKET)
 			return &IndexExpr{p.arrayRef(name, namePos), index}
 		} else if p.tok == LPAREN && !p.lexer.HadSpace() {

@@ -9,6 +9,7 @@ package interp
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -23,9 +24,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	. "github.com/benhoyt/goawk/internal/ast"
-	. "github.com/benhoyt/goawk/lexer"
-	. "github.com/benhoyt/goawk/parser"
+	. "github.com/xsyr/goawk/internal/ast"
+	. "github.com/xsyr/goawk/lexer"
+	. "github.com/xsyr/goawk/parser"
 )
 
 var (
@@ -36,6 +37,14 @@ var (
 
 	crlfNewline = runtime.GOOS == "windows"
 	varRegex    = regexp.MustCompile(`^([_a-zA-Z][_a-zA-Z0-9]*)=(.*)`)
+)
+
+type extOp int
+const (
+	extOpNop extOp = iota
+	extOpToMap
+	extOpArrayLen
+	extOpToStringSlice
 )
 
 // Error (actually *Error) is returned by Exec and Eval functions on
@@ -60,12 +69,23 @@ func (r returnValue) Error() string {
 	return "<return " + r.Value.str("%.6g") + ">"
 }
 
+
+type Runtime struct {
+	rawLine []byte
+}
+
+func (rt *Runtime) RawLine() []byte {
+	return rt.rawLine
+}
+
+
 type interp struct {
 	// Input/output
 	output        io.Writer
 	flushOutput   bool
 	errorOutput   io.Writer
 	flushError    bool
+	spliter       bufio.SplitFunc
 	scanner       *bufio.Scanner
 	scanners      map[string]*bufio.Scanner
 	stdin         io.Reader
@@ -117,6 +137,8 @@ type interp struct {
 	exitStatus  int
 	regexCache  map[string]*regexp.Regexp
 	formatCache map[string]cachedFormat
+
+	rt *Runtime
 }
 
 // Various const configuration. Could make these part of Config if
@@ -193,6 +215,8 @@ type Config struct {
 	NoExec       bool
 	NoFileWrites bool
 	NoFileReads  bool
+
+	Runtime *Runtime
 }
 
 // ExecProgram executes the parsed program using the given interpreter
@@ -230,6 +254,8 @@ func ExecProgram(program *Program, config *Config) (int, error) {
 	p.noExec = config.NoExec
 	p.noFileWrites = config.NoFileWrites
 	p.noFileReads = config.NoFileReads
+	p.rt = config.Runtime
+
 	err := p.initNativeFuncs(config.Funcs)
 	if err != nil {
 		return 0, err
@@ -423,10 +449,28 @@ func (p *interp) execute(stmt Stmt) error {
 		if len(s.Args) > 0 {
 			strs := make([]string, len(s.Args))
 			for i, a := range s.Args {
-				v, err := p.eval(a)
+				v, err := p.evalExt(a, extOpToMap)
 				if err != nil {
 					return err
 				}
+
+				if v.typ == typeStrSlice || v.typ == typeStrMap {
+					var buf bytes.Buffer
+					buf.WriteString("[ ")
+					if v.typ == typeStrSlice {
+						for i, val := range v.ss {
+							buf.WriteString(strconv.Itoa(i) + ":" + val + " ")
+						}
+					} else if v.typ == typeStrMap {
+						for key, val := range v.m {
+							buf.WriteString(key + ":" + val + " ")
+						}
+					}
+					buf.WriteString("]")
+					strs[i] = buf.String()
+					continue
+				}
+
 				strs[i] = v.str(p.outputFormat)
 			}
 			line = strings.Join(strs, p.outputFieldSep)
@@ -636,8 +680,12 @@ func (p *interp) execute(stmt Stmt) error {
 	return nil
 }
 
-// Evaluate a single expression, return expression value and error
 func (p *interp) eval(expr Expr) (value, error) {
+	return p.evalExt(expr, extOpNop)
+}
+
+// Evaluate a single expression, return expression value and error
+func (p *interp) evalExt(expr Expr, extop extOp) (value, error) {
 	switch e := expr.(type) {
 	case *NumExpr:
 		// Number literal
@@ -782,7 +830,7 @@ func (p *interp) eval(expr Expr) (value, error) {
 		if err != nil {
 			return null(), err
 		}
-		return p.getArrayValue(e.Array.Scope, e.Array.Index, index), nil
+		return p.getArrayValue(e.Array.Scope, e.Array.Index, index, extop), nil
 
 	case *CallExpr:
 		// Call a builtin function
@@ -887,7 +935,7 @@ func (p *interp) evalForAugAssign(expr Expr) (v value, arrayIndex string, fieldI
 		if err != nil {
 			return null(), "", 0, err
 		}
-		v = p.getArrayValue(expr.Array.Scope, expr.Array.Index, arrayIndex)
+		v = p.getArrayValue(expr.Array.Scope, expr.Array.Index, arrayIndex, extOpNop)
 	case *FieldExpr:
 		index, err := p.eval(expr.Index)
 		if err != nil {
@@ -1056,9 +1104,31 @@ func (p *interp) getArrayIndex(scope VarScope, index int) int {
 }
 
 // Get a value from given array by key (index)
-func (p *interp) getArrayValue(scope VarScope, arrayIndex int, index string) value {
+func (p *interp) getArrayValue(scope VarScope, arrayIndex int, index string, extop extOp) value {
 	resolved := p.getArrayIndex(scope, arrayIndex)
 	array := p.arrays[resolved]
+	if extop == extOpArrayLen {
+		return arrayLength(len(array))
+	}
+	if index == "" {
+		if extop == extOpToMap {
+			m := make(map[string]string)
+			for k, v := range array {
+				m[k] = v.s
+			}
+			return strmap(m)
+		} else if extop == extOpToStringSlice {
+			l := len(array)
+			if l == 0 {
+				return strslice(nil)
+			}
+			ss := make([]string, len(array))
+			for i:=0; i < l; i++ {
+				ss[i] = array[strconv.Itoa(i)].s
+			}
+			return strslice(ss)
+		}
+	}
 	v, ok := array[index]
 	if !ok {
 		// Strangely, per the POSIX spec, "Any other reference to a
@@ -1072,7 +1142,23 @@ func (p *interp) getArrayValue(scope VarScope, arrayIndex int, index string) val
 // Set a value in given array by key (index)
 func (p *interp) setArrayValue(scope VarScope, arrayIndex int, index string, v value) {
 	resolved := p.getArrayIndex(scope, arrayIndex)
-	p.arrays[resolved][index] = v
+	array := p.arrays[resolved]
+	if v.typ == typeStrSlice {
+		if index == "" {
+			array = make(map[string]value)
+			p.arrays[resolved] = array
+		}
+		for i, val := range v.ss {
+			array[strconv.Itoa(i)] = str(val)
+		}
+	} else if v.typ == typeStrMap {
+		p.arrays[resolved] = array
+		for key, val := range v.m {
+			array[key] = str(val)
+		}
+	} else {
+		array[index] = v
+	}
 }
 
 // Get the value of given numbered field, equivalent to "$index"

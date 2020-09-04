@@ -17,8 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	. "github.com/benhoyt/goawk/internal/ast"
-	. "github.com/benhoyt/goawk/lexer"
+	. "github.com/xsyr/goawk/internal/ast"
+	. "github.com/xsyr/goawk/lexer"
 )
 
 // Call builtin function specified by "op" with given args
@@ -89,7 +89,13 @@ func (p *interp) callBuiltin(op Token, argExprs []Expr) (value, error) {
 	// require heap allocation)
 	args := make([]value, 0, 7)
 	for _, a := range argExprs {
-		arg, err := p.eval(a)
+		var arg value
+		var err error
+		if op == F_LENGTH {
+			arg, err = p.evalExt(a, extOpArrayLen)
+		} else {
+			arg, err = p.eval(a)
+		}
 		if err != nil {
 			return null(), err
 		}
@@ -103,6 +109,9 @@ func (p *interp) callBuiltin(op Token, argExprs []Expr) (value, error) {
 		case 0:
 			return num(float64(len(p.line))), nil
 		default:
+			if args[0].typ == typeArrayLength {
+				return num(args[0].num()), nil
+			}
 			return num(float64(len(p.toString(args[0])))), nil
 		}
 
@@ -321,17 +330,32 @@ func (p *interp) callNative(index int, args []Expr) (value, error) {
 	// Build list of args to pass to function
 	values := make([]reflect.Value, 0, 7) // up to 7 args won't require heap allocation
 	for i, arg := range args {
-		a, err := p.eval(arg)
-		if err != nil {
-			return null(), err
-		}
+		extop := extOpNop
+
 		var argType reflect.Type
 		if !f.isVariadic || i < len(f.in)-1 {
 			argType = f.in[i]
+			if argType.Kind() == reflect.Slice {
+				if argType.Elem().Kind() == reflect.String {
+					extop = extOpToStringSlice
+				} else if argType.Elem().Kind() == reflect.Map {
+					panic("not supported")
+				}
+			} else if argType.Kind() == reflect.Map {
+				extop = extOpToMap
+			}
 		} else {
 			// Final arg(s) when calling a variadic are all of this type
 			argType = variadicType
 		}
+
+
+		a, err := p.evalExt(arg, extop)
+		if err != nil {
+			return null(), err
+		}
+
+
 		values = append(values, p.toNative(a, argType))
 	}
 	// Use zero value for any unspecified args
@@ -392,11 +416,22 @@ func (p *interp) toNative(v value, typ reflect.Type) reflect.Value {
 	case reflect.String:
 		return reflect.ValueOf(p.toString(v))
 	case reflect.Slice:
-		if typ.Elem().Kind() != reflect.Uint8 {
+		k := typ.Elem().Kind()
+		if k == reflect.String {
+			return reflect.ValueOf(v.ss)
+		}
+		if k != reflect.Uint8 {
 			// Shouldn't happen: prevented by checkNativeFunc
 			panic(fmt.Sprintf("unexpected argument slice: %s", typ.Elem().Kind()))
 		}
 		return reflect.ValueOf([]byte(p.toString(v)))
+	case reflect.Map:
+		if v.typ == typeNull {
+			return reflect.ValueOf(nil)
+		} else if v.typ == typeStrMap {
+			return reflect.ValueOf(v.m)
+		}
+		panic(fmt.Sprintf("can't convert %T(%v) to Map[string]string", v.typ, v.typ))
 	default:
 		// Shouldn't happen: prevented by checkNativeFunc
 		panic(fmt.Sprintf("unexpected argument type: %s", typ.Kind()))
@@ -416,12 +451,39 @@ func fromNative(v reflect.Value) value {
 		return num(v.Float())
 	case reflect.String:
 		return str(v.String())
+	case reflect.Map:
+		if b, ok := v.Interface().(map[string]string); ok {
+			return strmap(b)
+		}
+		// Shouldn't happen: prevented by checkNativeFunc
+		panic(fmt.Sprintf("unexpected return slice: %s", v.Type().Elem().Kind()))
 	case reflect.Slice:
 		if b, ok := v.Interface().([]byte); ok {
 			return str(string(b))
 		}
+		if b, ok := v.Interface().([]string); ok {
+			return strslice(b)
+		}
 		// Shouldn't happen: prevented by checkNativeFunc
 		panic(fmt.Sprintf("unexpected return slice: %s", v.Type().Elem().Kind()))
+	case reflect.Interface:
+		switch val := v.Interface().(type) {
+		case []string:
+			return strslice(val)
+		case map[string]string:
+			return strmap(val)
+		case bool:
+			return boolean(v.Bool())
+		case int, int8, int16,int32,int64,uint, uint8, uint16,uint32,uint64:
+			return num(float64(v.Int()))
+		case float32, float64:
+			return num(v.Float())
+		case string:
+			return str(v.String())
+
+		default:
+			panic(fmt.Sprintf("unexpected return type: %T", val))
+		}
 	default:
 		// Shouldn't happen: prevented by checkNativeFunc
 		panic(fmt.Sprintf("unexpected return type: %s", v.Kind()))
@@ -526,11 +588,15 @@ func validNativeType(typ reflect.Type) bool {
 		return true
 	case reflect.Float32, reflect.Float64:
 		return true
+	case reflect.Interface:
+		return true
 	case reflect.String:
+		return true
+	case reflect.Map:
 		return true
 	case reflect.Slice:
 		// Only allow []byte (convert to string in AWK)
-		return typ.Elem().Kind() == reflect.Uint8
+		return typ.Elem().Kind() == reflect.Uint8 || typ.Elem().Kind() == reflect.String
 	default:
 		return false
 	}

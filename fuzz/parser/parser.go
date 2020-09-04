@@ -3,7 +3,7 @@
 package fuzz
 
 import (
-	"github.com/benhoyt/goawk/parser"
+	"github.com/xsyr/goawk/parser"
 )
 
 func Fuzz(data []byte) int {

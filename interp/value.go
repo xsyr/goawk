@@ -7,7 +7,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/benhoyt/goawk/internal/strutil"
+	"github.com/xsyr/goawk/internal/strutil"
 )
 
 type valueType uint8
@@ -17,13 +17,19 @@ const (
 	typeStr
 	typeNum
 	typeNumStr
+	typeStrSlice
+	typeStrMap
+	typeArrayLength
 )
 
 // An AWK value (these are passed around by value)
 type value struct {
 	typ valueType // Type of value
+
 	s   string    // String value (for typeStr)
 	n   float64   // Numeric value (for typeNum and typeNumStr)
+	ss  []string
+	m  map[string]string
 }
 
 // Create a new null value
@@ -39,6 +45,18 @@ func num(n float64) value {
 // Create a new string value
 func str(s string) value {
 	return value{typ: typeStr, s: s}
+}
+
+func strslice(ss []string) value {
+	return value{typ: typeStrSlice, ss: ss}
+}
+
+func strmap(m map[string]string) value {
+	return value{typ: typeStrMap, m : m}
+}
+
+func arrayLength(len int) value {
+	return value{typ: typeArrayLength, n: float64(len)}
 }
 
 // Create a new value for a "numeric string" context, converting the
@@ -81,6 +99,11 @@ func (v value) boolean() bool {
 // format if a number value. Integers are a special case and don't
 // use floatFormat.
 func (v value) str(floatFormat string) string {
+	if v.typ == typeStrSlice {
+		return fmt.Sprint(v.ss)
+	} else if v.typ == typeStrMap {
+		return fmt.Sprint(v.m)
+	}
 	if v.typ == typeNum {
 		switch {
 		case math.IsNaN(v.n):

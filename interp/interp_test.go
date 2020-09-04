@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/benhoyt/goawk/interp"
-	"github.com/benhoyt/goawk/parser"
+	"github.com/xsyr/goawk/interp"
+	"github.com/xsyr/goawk/parser"
 )
 
 var (

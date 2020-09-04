@@ -14,8 +14,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	. "github.com/benhoyt/goawk/internal/ast"
-	. "github.com/benhoyt/goawk/lexer"
+	. "github.com/xsyr/goawk/internal/ast"
+	. "github.com/xsyr/goawk/lexer"
 )
 
 // Print a line of output followed by a newline
@@ -165,19 +165,34 @@ func (p *interp) getInputScannerPipe(name string) (*bufio.Scanner, error) {
 	return scanner, nil
 }
 
+func (p *interp)splitWrapper(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	advance, token, err = p.spliter(data, atEOF)
+	if advance > 0 {
+		p.rt.rawLine = data[:advance]
+	}
+	if atEOF {
+		p.rt.rawLine = nil
+	}
+	return
+}
+
 // Create a new buffered Scanner for reading input records
 func (p *interp) newScanner(input io.Reader) *bufio.Scanner {
 	scanner := bufio.NewScanner(input)
 	switch p.recordSep {
 	case "\n":
 		// Scanner default is to split on newlines
+		p.spliter = bufio.ScanLines
 	case "":
 		// Empty string for RS means split on \n\n (blank lines)
-		scanner.Split(scanLinesBlank)
+		//scanner.Split(scanLinesBlank)
+		p.spliter = scanLinesBlank
 	default:
 		splitter := byteSplitter{p.recordSep[0]}
-		scanner.Split(splitter.scan)
+		//scanner.Split(splitter.scan)
+		p.spliter = splitter.scan
 	}
+	scanner.Split(p.splitWrapper)
 	buffer := make([]byte, inputBufSize)
 	scanner.Buffer(buffer, maxRecordLength)
 	return scanner
@@ -409,6 +424,9 @@ func writeOutput(w io.Writer, s string) error {
 		s = strings.Replace(s, "\n", "\r\n", -1)
 	}
 	_, err := io.WriteString(w, s)
+	if f, ok := w.(*bufio.Writer); ok {
+		f.Flush()
+	}
 	return err
 }
 
