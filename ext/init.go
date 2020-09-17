@@ -28,5 +28,6 @@ func init() {
         newUrlModule(),
         newCsvModule(),
         newHttpModule(),
+        newVegetaModule(),
     }
 }

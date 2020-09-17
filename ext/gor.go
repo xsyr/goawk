@@ -295,6 +295,7 @@ func (m *gorModule) define() {
                         ps[k] = ""
                     }
                 }
+                ps["Host"] = m.req.Host
                 return ps
             },
         },
